@@ -1,0 +1,6 @@
+# `food_and_drink` is suppressed on the depository account, while remaining a
+# family-wide category everywhere else.
+depository_hides_food:
+  account: depository
+  category: food_and_drink
+  hidden: true

@@ -4,6 +4,12 @@ class Category < ApplicationRecord
 
   belongs_to :family
 
+  # NULL means "prime": the category applies to every account in the family,
+  # which is what every category was before per-account category sets existed.
+  # A non-NULL account scopes the category to that one account.
+  belongs_to :account, optional: true
+
+  has_many :account_category_overrides, dependent: :destroy
   has_many :budget_categories, dependent: :destroy
   has_many :subcategories,
          -> { order(:name) },
@@ -23,10 +29,17 @@ class Category < ApplicationRecord
 
   validates :name, :color, :lucide_icon, :family, presence: true
   validates :color, format: { with: /\A#[0-9A-Fa-f]{6}\z/ }
-  validates :name, uniqueness: { scope: :family_id }
+  # Names are unique within a scope, not across the family: a family may hold a
+  # prime "Travel" and a separate "Travel" scoped to the pro account. The two
+  # partial unique indexes added alongside this enforce the same rule in the
+  # database, where a single index could not (Postgres treats NULLs as
+  # distinct, so prime rows would go unconstrained).
+  validates :name, uniqueness: { scope: [ :family_id, :account_id ] }
   validates :name, exclusion: { in: [ UNCATEGORIZED_FILTER_VALUE ] }
 
   validate :category_level_limit
+  validate :account_belongs_to_family
+  validate :parent_shares_scope
 
   before_save :inherit_color_from_parent
 
@@ -39,6 +52,9 @@ class Category < ApplicationRecord
       .order(:name, :id)
   }
   scope :roots, -> { where(parent_id: nil) }
+  # Family-wide categories: the default set every account resolves against.
+  scope :prime, -> { where(account_id: nil) }
+  scope :scoped_to_account, ->(account_id) { where(account_id: account_id) }
   # Legacy scopes - classification removed; these now return all categories
   scope :incomes, -> { all }
   scope :expenses, -> { all }
@@ -172,6 +188,42 @@ class Category < ApplicationRecord
   end
 
   class << self
+    # The category set that applies to a single account: the family's prime
+    # categories minus the ones hidden on this account, plus the categories
+    # scoped to it.
+    def for_account(account)
+      account_id = account.respond_to?(:id) ? account.id : account
+
+      where(account_id: [ nil, account_id ])
+        .where.not(id: AccountCategoryOverride.hidden.where(account_id: account_id).select(:category_id))
+    end
+
+    # The category set that applies across several accounts at once -- a budget
+    # covering a whole family, a bulk edit spanning accounts, a report.
+    #
+    # Union, deliberately, not intersection: a prime category drops out only
+    # when it is hidden on EVERY account in scope. Hiding "Pet" on the pro
+    # account must not remove it from a view that also covers the personal
+    # account, or money would vanish from aggregates with nothing on the page
+    # to explain it.
+    #
+    # An empty `account_ids` means "no account context", which resolves to the
+    # full family set rather than to nothing -- callers that cannot determine a
+    # scope should see everything, not an empty picker.
+    def visible_for_account_ids(account_ids)
+      account_ids = Array(account_ids).compact
+      return all if account_ids.empty?
+
+      hidden_everywhere = AccountCategoryOverride
+        .hidden
+        .where(account_id: account_ids)
+        .group(:category_id)
+        .having("COUNT(DISTINCT account_id) = ?", account_ids.uniq.size)
+        .select(:category_id)
+
+      where(account_id: [ nil, *account_ids ]).where.not(id: hidden_everywhere)
+    end
+
     def ids_with_transactions(family:, category_ids:)
       category_ids = Array(category_ids).compact
       return {} if category_ids.empty?
@@ -226,7 +278,7 @@ class Category < ApplicationRecord
 
     def bootstrap!
       default_categories.each do |name, color, icon|
-        find_or_create_by!(name: name) do |category|
+        prime.find_or_create_by!(name: name) do |category|
           category.color = color
           category.lucide_icon = icon
         end
@@ -363,6 +415,27 @@ class Category < ApplicationRecord
     parent_id.present? && parent.present?
   end
 
+  # Applies to every account in the family (the default).
+  def prime?
+    account_id.nil?
+  end
+
+  # Exists only on one account.
+  def account_scoped?
+    account_id.present?
+  end
+
+  # Whether this category is suppressed on the given account. Only meaningful
+  # for prime categories; an account-scoped category is simply absent from
+  # every account but its own.
+  def hidden_for_account?(account)
+    return false if account_scoped?
+
+    account_id = account.respond_to?(:id) ? account.id : account
+
+    account_category_overrides.any? { |o| o.account_id == account_id && o.hidden? }
+  end
+
   def name_with_parent
     return name unless subcategory?
 
@@ -410,6 +483,22 @@ class Category < ApplicationRecord
       if (subcategory? && parent&.subcategory?) || (parent? && subcategory?)
         errors.add(:parent, "can't have more than 2 levels of subcategories")
       end
+    end
+
+    def account_belongs_to_family
+      return if account.nil? || family_id.nil?
+
+      errors.add(:account, "must belong to the same family") if account.family_id != family_id
+    end
+
+    # A prime parent with an account-scoped child (or the reverse) would make
+    # the category tree resolve differently per account, and `category_level_limit`
+    # could no longer be checked without an account in hand. Keep a tree within
+    # one scope.
+    def parent_shares_scope
+      return if parent.nil?
+
+      errors.add(:parent, "must be in the same account scope") if parent.account_id != account_id
     end
 
     def monetizable_currency

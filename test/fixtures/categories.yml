@@ -15,3 +15,9 @@ subcategory:
   name: Restaurants
   parent: food_and_drink
   family: dylan_family
+
+# Scoped to a single account: exists on `depository` only.
+account_scoped:
+  name: Business Travel
+  family: dylan_family
+  account: depository
