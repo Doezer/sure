@@ -920,4 +920,68 @@ class AccountTest < ActiveSupport::TestCase
 
     assert_nil account.history_start_date
   end
+
+  # --- Per-account category sets ---
+
+  test "available_categories resolves the account's effective set" do
+    result = @account.available_categories
+
+    assert_includes result, categories(:income)
+    assert_includes result, categories(:account_scoped)
+    assert_not_includes result, categories(:food_and_drink)
+  end
+
+  test "category_set_overridden? is true when the account hides or owns categories" do
+    assert @account.category_set_overridden?
+  end
+
+  test "category_set_overridden? is false for an untouched account" do
+    assert_not accounts(:other_liability).category_set_overridden?
+  end
+
+  test "reset_category_overrides! restores the family set" do
+    @account.reset_category_overrides!
+
+    result = @account.reload.available_categories
+
+    assert_includes result, categories(:food_and_drink), "hidden categories come back"
+    assert_not @account.category_set_overridden?
+  end
+
+  test "reset_category_overrides! destroys the account's own categories" do
+    assert_difference -> { Category.count }, -1 do
+      @account.reset_category_overrides!
+    end
+
+    assert_nil Category.find_by(id: categories(:account_scoped).id)
+  end
+
+  test "reset_category_overrides! uncategorizes transactions of account-scoped categories" do
+    transaction = create_transaction(account: @account)
+    transaction.update!(category: categories(:account_scoped))
+
+    @account.reset_category_overrides!
+
+    assert_nil transaction.reload.category_id
+  end
+
+  test "resettable_transaction_count reports what a reset would uncategorize" do
+    transaction = create_transaction(account: @account)
+    transaction.update!(category: categories(:account_scoped))
+
+    assert_equal 1, @account.resettable_transaction_count
+  end
+
+  test "resettable_transaction_count is zero without account-scoped categories" do
+    assert_equal 0, accounts(:other_liability).resettable_transaction_count
+  end
+
+  test "destroying an account destroys its categories and overrides" do
+    assert_difference -> { AccountCategoryOverride.count }, -1 do
+      @account.categories.destroy_all
+      @account.account_category_overrides.destroy_all
+    end
+
+    assert_not @account.reload.category_set_overridden?
+  end
 end

@@ -16,6 +16,16 @@ class Account < ApplicationRecord
   belongs_to :import, optional: true
 
   has_many :account_shares, dependent: :destroy
+  # Categories that exist only on this account, and this account's decisions to
+  # suppress family-wide ones. Both are destroyed with the account; the
+  # categories' transactions fall back to uncategorized via Category's own
+  # `dependent: :nullify`.
+  has_many :categories, dependent: :destroy
+  has_many :account_category_overrides, dependent: :destroy
+  has_many :hidden_categories,
+           -> { merge(AccountCategoryOverride.hidden) },
+           through: :account_category_overrides,
+           source: :category
   has_many :shared_users, through: :account_shares, source: :user
   has_many :import_mappings, as: :mappable, dependent: :destroy, class_name: "Import::Mapping"
   has_many :entries, dependent: :destroy
@@ -508,6 +518,44 @@ class Account < ApplicationRecord
     account_providers.none? &&
       plaid_account_id.blank? &&
       simplefin_account_id.blank?
+  end
+
+  # The category set that applies to this account: the family's prime
+  # categories minus the ones hidden here, plus this account's own.
+  def available_categories
+    family.categories.for_account(self)
+  end
+
+  # Whether this account departs from the family's category set at all. Drives
+  # the "overridden" marker in settings and whether a reset has anything to do.
+  def category_set_overridden?
+    account_category_overrides.hidden.exists? || categories.exists?
+  end
+
+  # Returns this account to the family's category set.
+  #
+  # Destroying its own categories uncategorizes their transactions, via
+  # Category's `dependent: :nullify` -- the same trade-off the existing
+  # "Delete all categories" action makes. Callers surface
+  # `resettable_transaction_count` in the confirmation first so the number is
+  # on screen before anything is destroyed.
+  def reset_category_overrides!
+    transaction do
+      account_category_overrides.destroy_all
+      categories.destroy_all
+    end
+  end
+
+  # How many transactions would lose their category if the overrides were
+  # reset now. Counted across the whole family, not just this account: an
+  # account-scoped category can legitimately be assigned to a transaction that
+  # was later moved or matched elsewhere.
+  def resettable_transaction_count
+    category_ids = categories.select(:id)
+
+    return 0 if category_ids.blank?
+
+    Transaction.where(category_id: category_ids).count
   end
 
   # Default GoalPledge kind for this account. Manual accounts get
