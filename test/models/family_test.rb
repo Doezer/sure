@@ -32,13 +32,13 @@ class FamilyTest < ActiveSupport::TestCase
 
   test "investment_contributions_category creates category when missing" do
     family = families(:dylan_family)
+    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
     family.categories.where(name: Category.investment_contributions_name).destroy_all
-
-    assert_nil family.categories.find_by(name: Category.investment_contributions_name)
 
     category = family.investment_contributions_category
 
     assert category.persisted?
+    assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, category.system_key
     assert_equal Category.investment_contributions_name, category.name
     assert_equal "#0d9488", category.color
     assert_equal "trending-up", category.lucide_icon
@@ -46,187 +46,92 @@ class FamilyTest < ActiveSupport::TestCase
 
   test "investment_contributions_category returns existing category" do
     family = families(:dylan_family)
-    existing = family.categories.find_or_create_by!(name: Category.investment_contributions_name) do |c|
-      c.color = "#0d9488"
-      c.lucide_icon = "trending-up"
+    existing = ensure_investment_contributions_category(family)
+
+    assert_no_difference "Category.count" do
+      assert_equal existing, family.investment_contributions_category
     end
+  end
+
+  test "investment_contributions_category creates using the family locale" do
+    family = families(:dylan_family)
+    family.update!(locale: "fr")
+    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
+
+    # The request locale (e.g. from an Accept-Language header) must not decide
+    # the stored name; the family's own locale does.
+    category = I18n.with_locale(:en) { family.investment_contributions_category }
+
+    assert_equal "Contributions aux investissements", category.name
+  end
+
+  test "investment_contributions_category is found by key regardless of request locale" do
+    family = families(:dylan_family)
+    family.update!(locale: "fr")
+    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
+
+    created = I18n.with_locale(:en) { family.investment_contributions_category }
+
+    assert_no_difference "Category.count" do
+      found = I18n.with_locale(:nl) { family.investment_contributions_category }
+
+      assert_equal created.id, found.id
+    end
+  end
+
+  # The lookup is by key, not by name, so a family that renames the category
+  # keeps it. Renaming used to make the category unfindable, and the next
+  # transfer would silently create a second one.
+  test "investment_contributions_category survives a rename" do
+    family = families(:dylan_family)
+    category = ensure_investment_contributions_category(family)
+    category.update!(name: "Brokerage top-ups")
+
+    assert_no_difference "Category.count" do
+      assert_equal category.id, family.investment_contributions_category.id
+    end
+  end
+
+  # A plain user category can already occupy the name -- created by hand, or by
+  # an import, after the backfill ran. Creating alongside it would violate the
+  # (family_id, name) unique index, so it is adopted instead. This is what the
+  # pre-system_key code did whenever it found a row by name.
+  test "investment_contributions_category adopts a same-named user category" do
+    family = families(:dylan_family)
+    family.update!(locale: "en")
+    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    family.categories.where(name: "Investment Contributions").destroy_all
+
+    user_category = family.categories.create!(
+      name: "Investment Contributions", color: "#111111", lucide_icon: "shapes"
+    )
 
     assert_no_difference "Category.count" do
       result = family.investment_contributions_category
-      assert_equal existing, result
+
+      assert_equal user_category.id, result.id
+      assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, result.reload.system_key
     end
   end
 
-  test "investment_contributions_category uses family locale consistently" do
+  # Merging the per-locale duplicates older versions could accumulate is
+  # BackfillCategorySystemKeys' job now, not this method's -- see
+  # test/migrations/backfill_category_system_keys_migration_test.rb. Once the key
+  # exists a family can only hold one of them, enforced by a partial unique index.
+  test "investment_contributions_category cannot create a second keyed category" do
     family = families(:dylan_family)
-    family.update!(locale: "fr")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
+    ensure_investment_contributions_category(family)
 
-    # Simulate different request locales (e.g., from Accept-Language header)
-    # The category should always be created with the family's locale (French)
-    category_from_english_request = I18n.with_locale(:en) do
-      family.investment_contributions_category
-    end
-
-    assert_equal "Contributions aux investissements", category_from_english_request.name
-
-    # Second request with different locale should find the same category
-    assert_no_difference "Category.count" do
-      category_from_dutch_request = I18n.with_locale(:nl) do
-        family.investment_contributions_category
-      end
-
-      assert_equal category_from_english_request.id, category_from_dutch_request.id
-      assert_equal "Contributions aux investissements", category_from_dutch_request.name
-    end
-  end
-
-  test "investment_contributions_category prevents duplicate categories across locales" do
-    family = families(:dylan_family)
-    family.update!(locale: "en")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
-    # Create category under English family locale
-    english_category = family.investment_contributions_category
-    assert_equal "Investment Contributions", english_category.name
-
-    # Simulate a request with French locale (e.g., from browser Accept-Language)
-    # Should still return the English category, not create a French one
-    assert_no_difference "Category.count" do
-      I18n.with_locale(:fr) do
-        french_request_category = family.investment_contributions_category
-        assert_equal english_category.id, french_request_category.id
-        assert_equal "Investment Contributions", french_request_category.name
-      end
-    end
-  end
-
-  test "investment_contributions_category reuses legacy category with wrong locale" do
-    family = families(:dylan_family)
-    family.update!(locale: "fr")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
-    # Simulate legacy: category was created with English name (old bug behavior)
-    legacy_category = family.categories.create!(
-      name: "Investment Contributions",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    # Should find and reuse the legacy category, updating its name to French
-    assert_no_difference "Category.count" do
-      result = family.investment_contributions_category
-      assert_equal legacy_category.id, result.id
-      assert_equal "Contributions aux investissements", result.name
-    end
-  end
-
-  test "investment_contributions_category merges multiple locale variants" do
-    family = families(:dylan_family)
-    family.update!(locale: "en")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
-    # Simulate legacy: multiple categories created under different locales
-    english_category = family.categories.create!(
-      name: "Investment Contributions",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    french_category = family.categories.create!(
+    duplicate = family.categories.build(
       name: "Contributions aux investissements",
       color: "#0d9488",
-      lucide_icon: "trending-up"
+      lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
     )
 
-    # Create transactions pointing to both categories
-    account = family.accounts.first
-    txn1 = Transaction.create!(category: english_category)
-    Entry.create!(
-      account: account,
-      entryable: txn1,
-      amount: 100,
-      currency: "USD",
-      date: Date.current,
-      name: "Test 1"
-    )
-
-    txn2 = Transaction.create!(category: french_category)
-    Entry.create!(
-      account: account,
-      entryable: txn2,
-      amount: 200,
-      currency: "USD",
-      date: Date.current,
-      name: "Test 2"
-    )
-
-    txn2_entry_updated_at = txn2.entry.updated_at
-
-    # Should merge both categories into one, keeping the oldest
-    assert_difference "Category.count", -1 do
-      result = travel_to(1.minute.from_now) { family.investment_contributions_category }
-      assert_equal english_category.id, result.id
-      assert_equal "Investment Contributions", result.name
-
-      # Both transactions should now point to the keeper
-      assert_equal english_category.id, txn1.reload.category_id
-      assert_equal english_category.id, txn2.reload.category_id
-
-      # Reassignment must touch entries so entry-keyed caches bust
-      # (only txn2 is reassigned — txn1 already points at the keeper)
-      assert txn2.entry.reload.updated_at > txn2_entry_updated_at
-
-      # French category should be deleted
-      assert_nil Category.find_by(id: french_category.id)
-    end
-  end
-
-  test "investment_contributions_category merges duplicates across accounts" do
-    family = families(:dylan_family)
-    family.update!(locale: "en")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
-    english_category = family.categories.create!(
-      name: "Investment Contributions",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    french_category = family.categories.create!(
-      name: "Contributions aux investissements",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    # Transactions on two different accounts of the same family: the
-    # transactions-through-accounts scope must reach both.
-    txn1 = Transaction.create!(category: english_category)
-    Entry.create!(
-      account: accounts(:depository),
-      entryable: txn1,
-      amount: 100,
-      currency: "USD",
-      date: Date.current,
-      name: "First account txn"
-    )
-
-    txn2 = Transaction.create!(category: french_category)
-    Entry.create!(
-      account: accounts(:credit_card),
-      entryable: txn2,
-      amount: 50,
-      currency: "USD",
-      date: Date.current,
-      name: "Second account txn"
-    )
-
-    result = family.investment_contributions_category
-
-    assert_equal english_category.id, result.id
-    assert_equal english_category.id, txn1.reload.category_id
-    assert_equal english_category.id, txn2.reload.category_id,
-      "transaction on the second account must also be reassigned to the keeper"
+    assert_not duplicate.valid?
   end
 
   test "moniker helpers return expected singular and plural labels" do

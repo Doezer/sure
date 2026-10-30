@@ -131,14 +131,73 @@ class CategoryTest < ActiveSupport::TestCase
     assert_equal "Validation failed: Parent can't have more than 2 levels of subcategories", error.message
   end
 
-  test "all_investment_contributions_names returns all locale variants" do
-    names = Category.all_investment_contributions_names
+  # --- System categories ---
 
-    assert_includes names, "Investment Contributions"  # English
-    assert_includes names, "Contributions aux investissements"  # French
-    assert_includes names, "Investeringsbijdragen"  # Dutch
-    assert names.all? { |name| name.is_a?(String) }
-    assert_equal names, names.uniq  # No duplicates
+  test "system_key must be one of SYSTEM_KEYS" do
+    category = @family.categories.build(
+      name: "Bogus", color: "#000000", lucide_icon: "shapes", system_key: "not_a_real_key"
+    )
+
+    assert_not category.valid?
+    assert_includes category.errors[:system_key], "is not included in the list"
+  end
+
+  test "a family may hold only one category per system key" do
+    @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    duplicate = @family.categories.build(
+      name: "Contributions aux investissements", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    assert_not duplicate.valid?
+    assert_includes duplicate.errors[:system_key], "has already been taken"
+  end
+
+  test "two families may each hold the same system key" do
+    @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    other = families(:empty).categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    assert other.persisted?
+  end
+
+  test "system_key is nil for ordinary categories" do
+    assert_nil categories(:food_and_drink).system_key
+    assert_not categories(:food_and_drink).system?
+  end
+
+  test "system_space and user_space scopes partition the family's categories" do
+    system_category = @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    assert_includes @family.categories.system_space, system_category
+    assert_not_includes @family.categories.user_space, system_category
+    assert_includes @family.categories.user_space, categories(:food_and_drink)
+    assert_not_includes @family.categories.system_space, categories(:food_and_drink)
+  end
+
+  test "renaming a system category leaves it findable by key" do
+    system_category = @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+    )
+
+    system_category.update!(name: "Brokerage top-ups")
+
+    assert_equal system_category,
+      @family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).first
   end
 
   test "display_name localizes default category names" do

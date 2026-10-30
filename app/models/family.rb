@@ -618,9 +618,6 @@ class Family < ApplicationRecord
     IncomeStatement.new(self, user: user, accounts: accounts)
   end
 
-  # Returns the Investment Contributions category for this family, creating it if it doesn't exist.
-  # This is used for auto-categorizing transfers to investment accounts.
-  # Always uses the family's locale to ensure consistent category naming across all users.
   # Transaction kinds left out of spending/income lists. With
   # investment_contributions_as_spending off, money moved into investment
   # accounts is reported as invested rather than spent.
@@ -630,43 +627,45 @@ class Family < ApplicationRecord
     Transaction::BUDGET_EXCLUDED_KINDS + [ "investment_contribution" ]
   end
 
+  # Returns the Investment Contributions category for this family, creating it if it doesn't exist.
+  # This is used for auto-categorizing transfers to investment accounts.
+  #
+  # Looked up by `system_key`, not by name. The name is only a default for the
+  # row this method creates: a family that renames the category, or whose row
+  # was created under a different request locale, still resolves here. The
+  # migration that introduced the key backfilled existing rows and collapsed the
+  # per-locale duplicates older versions could accumulate, so neither is handled
+  # on read any more.
   def investment_contributions_category
-    # Find ALL legacy categories (created under old request-locale behavior)
-    legacy = categories.where(name: Category.all_investment_contributions_names).order(:created_at).to_a
+    key = Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
 
-    if legacy.any?
-      keeper = legacy.first
-      duplicates = legacy[1..]
+    existing = categories.with_system_key(key).first
+    return existing if existing
 
-      # Reassign transactions and subcategories from duplicates to keeper
-      if duplicates.any?
-        duplicate_ids = duplicates.map(&:id)
-        categories.where(parent_id: duplicate_ids).update_all(parent_id: keeper.id)
-        Transaction.reassign_category!(transactions.where(category_id: duplicate_ids), keeper.id)
-        BudgetCategory.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
-        categories.where(id: duplicate_ids).delete_all
-      end
-
-      # Rename keeper to family's locale name if needed
-      I18n.with_locale(locale) do
-        correct_name = Category.investment_contributions_name
-        keeper.update!(name: correct_name) unless keeper.name == correct_name
-      end
-      return keeper
-    end
-
-    # Create new category using family's locale
     I18n.with_locale(locale) do
-      categories.find_or_create_by!(name: Category.investment_contributions_name) do |cat|
-        cat.color = "#0d9488"
-        cat.lucide_icon = "trending-up"
+      name = Category.investment_contributions_name
+
+      # The family may already hold a plain user category under this name --
+      # created by hand, or by an import, after the backfill ran. Adopt it
+      # rather than fail on the (family_id, name) unique index; adopting is what
+      # the pre-system_key code did whenever it found a row by name.
+      adoptable = categories.user_space.find_by(name: name)
+
+      if adoptable
+        adoptable.update!(system_key: key)
+        adoptable
+      else
+        categories.create!(
+          system_key: key,
+          name: name,
+          color: "#0d9488",
+          lucide_icon: "trending-up"
+        )
       end
     end
   rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
-    # Handle race condition: another process created the category
-    I18n.with_locale(locale) do
-      categories.find_by!(name: Category.investment_contributions_name)
-    end
+    # Another process got there first. The key is the identity, so re-read by it.
+    categories.with_system_key(key).first!
   end
 
   # Returns account IDs for tax-advantaged accounts (401k, IRA, HSA, etc.)
