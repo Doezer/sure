@@ -104,6 +104,17 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       keeper = connection.quote(keeper_id)
       duplicate = connection.quote(duplicate_id)
 
+      # Must be read before the hierarchy is rewritten below. When one variant is
+      # the other's subcategory, the parent's stored allocation already contains
+      # the child's (BudgetCategory#sync_parent_budgeted_spending! keeps a parent
+      # at its children plus its own reserve), so adding the two would count the
+      # child twice.
+      parent_and_child = connection.select_value(<<~SQL.squish).to_i.positive?
+        SELECT COUNT(*) FROM categories
+        WHERE (id = #{keeper} AND parent_id = #{duplicate})
+           OR (id = #{duplicate} AND parent_id = #{keeper})
+      SQL
+
       # Hierarchy first, as MergeDuplicateTagAndCategoryNames does. The keeper may
       # itself sit under the duplicate (one locale variant dragged under another);
       # repointing the duplicate's children blindly would make it its own parent.
@@ -142,15 +153,25 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       connection.execute("UPDATE import_source_mappings SET target_id = #{keeper} WHERE target_type = 'Category' AND target_id = #{duplicate}")
       connection.execute("UPDATE rule_actions SET value = #{keeper} WHERE action_type = 'set_transaction_category' AND value = #{duplicate}")
       connection.execute("UPDATE rule_conditions SET value = #{keeper} WHERE condition_type = 'transaction_category' AND value = #{duplicate}")
+      # A split rule stores its categories as splits[*].category_id inside one JSON
+      # text value, so the exact-match updates above never reach them. A UUID
+      # cannot occur by chance inside other text, so a plain replace is safe.
+      connection.execute(<<~SQL.squish)
+        UPDATE rule_actions
+        SET value = REPLACE(value, #{duplicate}, #{keeper})
+        WHERE action_type = 'split_transaction' AND POSITION(#{duplicate} IN value) > 0
+      SQL
 
       # Budgets that hold both rows: fold the duplicate's allocation into the
-      # keeper's, then drop the duplicate's row. Rollover is a standing choice
+      # keeper's (summed, unless one is the other's parent, see above), then drop
+      # the duplicate's row. Rollover is a standing choice
       # about the envelope, so it survives if EITHER row had it on; the carried
       # amount itself is derived and is recomputed by Budget::RolloverCalculator
       # the next time the budget loads.
+      combined = parent_and_child ? "GREATEST(kept.budgeted_spending, dup.budgeted_spending)" : "kept.budgeted_spending + dup.budgeted_spending"
       connection.execute(<<~SQL.squish)
         UPDATE budget_categories AS kept
-        SET budgeted_spending = kept.budgeted_spending + dup.budgeted_spending,
+        SET budgeted_spending = #{combined},
             rollover_enabled = kept.rollover_enabled OR dup.rollover_enabled,
             updated_at = NOW()
         FROM budget_categories AS dup

@@ -172,6 +172,52 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
     assert_equal 150, rows.first.budgeted_spending, "merging must not silently drop what the user planned to spend"
   end
 
+  # A parent's stored allocation already contains its children's, so summing a
+  # parent with its own duplicate-child would count the child twice.
+  test "does not double count when the duplicate is a subcategory of the keeper" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = @family.categories.create!(
+      name: "Contributions aux investissements", color: "#0d9488", lucide_icon: "trending-up",
+      parent: keeper, created_at: 1.day.ago
+    )
+    allocate(keeper => 150, duplicate => 50)
+
+    run_migration
+
+    assert_equal 150, budget_rows(keeper).first.budgeted_spending,
+      "the parent's 150 already includes the child's 50"
+  end
+
+  test "does not double count when the keeper is a subcategory of the duplicate" do
+    duplicate = create_legacy("Contributions aux investissements", created_at: 1.day.ago)
+    keeper = @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      parent: duplicate, created_at: 3.days.ago
+    )
+    allocate(duplicate => 150, keeper => 50)
+
+    run_migration
+
+    assert_equal 150, budget_rows(keeper).first.budgeted_spending,
+      "the parent's 150 already includes the child's 50"
+  end
+
+  # A split rule keeps its categories as splits[*].category_id inside one JSON
+  # text value, which the exact-match rule updates cannot reach.
+  test "repoints categories inside a split rule" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Anlagebeiträge", created_at: 1.day.ago)
+    value = { splits: [ { type: "percentage", amount: 100, category_id: duplicate.id } ] }.to_json
+    action = rules(:one).actions.build(action_type: "split_transaction", value: value)
+    action.save!(validate: false)
+
+    run_migration
+
+    assert_includes action.reload.value, keeper.id
+    assert_not_includes action.value, duplicate.id,
+      "a deleted category left in a split would silently produce uncategorized splits"
+  end
+
   test "keeps rollover on when only the duplicate had it" do
     keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
     duplicate = create_legacy("Contributi investimento", created_at: 1.day.ago)

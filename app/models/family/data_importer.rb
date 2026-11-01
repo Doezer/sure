@@ -425,6 +425,14 @@ class Family::DataImporter
         # Preflight already treats this as a reusable match, not a collision.
         category = mapped_record(:categories, old_id, @family.categories, record_type: "Category")
         category ||= @family.categories.find_by(name: data["name"])
+
+        # A system category is identified by its key, not its name. The family
+        # being restored into may already hold it under another spelling (its
+        # defaults were seeded in a different locale), and creating a second one
+        # would leave the app with two and only one reachable.
+        system_key = data["system_key"].presence
+        category ||= @family.categories.with_system_key(system_key).first if system_key
+
         created = category.blank?
         category ||= @family.categories.build
 
@@ -434,6 +442,14 @@ class Family::DataImporter
           classification_unused: data["classification_unused"] || data["classification"] || "expense",
           lucide_icon: data["lucide_icon"] || "shapes"
         )
+
+        # Carry the key across, unless this family already keys another category
+        # with it (the partial unique index allows one per family).
+        if system_key == Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS && category.system_key.nil? &&
+            !@family.categories.with_system_key(system_key).where.not(id: category.id).exists?
+          category.system_key = system_key
+        end
+
         category.save!
         map_source!(:categories, old_id, category)
         increment_summary("Category", created ? :created : :updated)
