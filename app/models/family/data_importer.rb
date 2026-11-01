@@ -408,6 +408,9 @@ class Family::DataImporter
     def import_categories(records)
       # First pass: create all categories without parent relationships
       parent_mappings = {}
+      # Categories already matched to a source record in this import, so a keyed
+      # lookup cannot hand the same target to a second, different source record.
+      claimed_ids = Set.new
 
       records.each do |record|
         data = record["data"]
@@ -430,8 +433,15 @@ class Family::DataImporter
         # being restored into may already hold it under another spelling (its
         # defaults were seeded in a different locale), and creating a second one
         # would leave the app with two and only one reachable.
+        #
+        # Unless an earlier record in this export already took that row: two
+        # distinct source categories (say an unkeyed "Investment Contributions"
+        # and a keyed one the user renamed) must not collapse into one target.
         system_key = data["system_key"].presence
-        category ||= @family.categories.with_system_key(system_key).first if system_key
+        if category.nil? && system_key
+          keyed = @family.categories.with_system_key(system_key).first
+          category = keyed unless keyed.nil? || claimed_ids.include?(keyed.id)
+        end
 
         created = category.blank?
         category ||= @family.categories.build
@@ -451,6 +461,7 @@ class Family::DataImporter
         end
 
         category.save!
+        claimed_ids << category.id
         map_source!(:categories, old_id, category)
         increment_summary("Category", created ? :created : :updated)
       end

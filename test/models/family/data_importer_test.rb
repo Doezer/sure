@@ -478,6 +478,27 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal 1, @family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).count
   end
 
+  test "does not collapse two source categories onto one keyed target" do
+    @family.categories.where(system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    @family.categories.where(name: [ "Investment Contributions", "Retirement" ]).destroy_all
+    keyed = ensure_investment_contributions_category(@family)
+
+    # An unkeyed "Investment Contributions" first, then a different category that
+    # carries the key under another name.
+    ndjson = build_ndjson([
+      { type: "Category", data: { id: "cat-plain", name: "Investment Contributions", color: "#111111" } },
+      { type: "Category", data: {
+          id: "cat-keyed", name: "Retirement", color: "#222222", system_key: "investment_contributions" } }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    retirement = @family.categories.find_by(name: "Retirement")
+    assert_not_nil retirement
+    assert_not_equal keyed.id, retirement.id,
+      "two different source categories must not be merged into the same target"
+  end
+
   test "imports tags" do
     ndjson = build_ndjson([
       {

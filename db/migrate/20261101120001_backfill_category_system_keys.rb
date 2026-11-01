@@ -109,6 +109,14 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       # the child's (BudgetCategory#sync_parent_budgeted_spending! keeps a parent
       # at its children plus its own reserve), so adding the two would count the
       # child twice.
+      #
+      # Known limit: only the relationship BETWEEN the two merged categories is
+      # reconciled. If the duplicate is a funded child of some third, surviving
+      # parent, that parent's stored amount still includes the duplicate's
+      # allocation, which now also sits on the keeper, so Budget#allocated_spending
+      # reads high until the parent is next edited. It takes a duplicate locale
+      # variant that is nested under an unrelated category AND budgeted, and
+      # Category::Merger has the same blind spot.
       parent_and_child = connection.select_value(<<~SQL.squish).to_i.positive?
         SELECT COUNT(*) FROM categories
         WHERE (id = #{keeper} AND parent_id = #{duplicate})
