@@ -119,6 +119,16 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
         WHERE parent_id = #{duplicate} AND id <> #{keeper}
       SQL
 
+      # Touch the entries first, as Transaction.reassign_category! does: a bare
+      # UPDATE skips the `touch` every normal save relies on, and report caches
+      # are keyed on entries' updated_at (Family#entries_cache_version). Done
+      # before the UPDATE below, while the transactions still match the duplicate.
+      connection.execute(<<~SQL.squish)
+        UPDATE entries
+        SET updated_at = NOW()
+        WHERE entryable_type = 'Transaction'
+          AND entryable_id IN (SELECT id FROM transactions WHERE category_id = #{duplicate})
+      SQL
       connection.execute("UPDATE transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
 
       # Everything else that points at a category. recurring_transactions has a

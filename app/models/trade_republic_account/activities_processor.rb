@@ -626,7 +626,7 @@ class TradeRepublicAccount::ActivitiesProcessor
 
     def investment_contribution_category_ids
       @investment_contribution_category_ids ||= account.family.categories
-        .where(name: Category.all_investment_contributions_names)
+        .with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS)
         .pluck(:id)
     end
 

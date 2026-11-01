@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require Rails.root.join("db/migrate/20261030120001_backfill_category_system_keys")
+require Rails.root.join("db/migrate/20261101120001_backfill_category_system_keys")
 
 # This migration is the one chance to merge the per-locale duplicate "Investment
 # Contributions" categories older versions could accumulate.
@@ -55,6 +55,35 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
 
     assert_equal keeper.id, entry.entryable.reload.category_id,
       "a transaction must never be left pointing at a merged-away category"
+  end
+
+  # Ported from the runtime merge this replaces: transactions on every account of
+  # the family must be reached, not only the first account's.
+  test "moves a duplicate's transactions on every account onto the keeper" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Wpłaty inwestycyjne", created_at: 1.day.ago)
+    first = create_transaction(account: accounts(:depository), category: duplicate)
+    second = create_transaction(account: accounts(:credit_card), category: duplicate)
+
+    run_migration
+
+    assert_equal keeper.id, first.entryable.reload.category_id
+    assert_equal keeper.id, second.entryable.reload.category_id,
+      "a transaction on the second account must also be reassigned to the keeper"
+  end
+
+  # Report caches are keyed on entries' updated_at; a bare UPDATE of the
+  # transaction would leave them serving the old category.
+  test "touches the entries of the transactions it reassigns" do
+    create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Contribuições para Investimentos", created_at: 1.day.ago)
+    entry = create_transaction(account: accounts(:depository), category: duplicate)
+    entry.update_columns(updated_at: 2.days.ago)
+    before = entry.reload.updated_at
+
+    run_migration
+
+    assert entry.reload.updated_at > before
   end
 
   test "moves a duplicate's subcategories onto the keeper" do
