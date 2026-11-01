@@ -21,29 +21,28 @@ class Category < ApplicationRecord
   # category can never collide with it, regardless of name or locale.
   UNCATEGORIZED_FILTER_VALUE = "__uncategorized__"
 
-  # Categories the application itself has to find again later, identified by a
-  # stable key instead of a localized name.
+  # A stable identity for a category the application creates and assigns on its
+  # own, so code can find it again without comparing against a localized name.
   #
-  # A category belongs here only if code must LOOK IT UP. Being auto-created is
-  # not enough -- Category.bootstrap! creates Income, Groceries and the rest,
-  # but nothing ever searches for them, and users rename and delete them freely,
-  # so they stay in user space. The two synthetic categories need no key either:
-  # "Uncategorized" is identified by `transactions.category_id IS NULL`, and
-  # "Other Investments" is a reporting construct that is never persisted.
+  # This is the first key, not a complete list. "Fees" (Transfer::Creator and
+  # TransfersController) is created, assigned and found by request-locale name
+  # in the same way and should get one too, and the provider category matchers
+  # (Monobank, Up, Plaid) locate the bootstrapped defaults by translated name.
+  # A general `default_key` on every bootstrapped category would cover all of
+  # those, and would let `localized_default_name_for` go; this column is the
+  # narrower step that removes the worst case first.
   #
-  # "Investment Contributions" is the one category that is both auto-created and
-  # auto-assigned (by the transfer matcher, provider imports and rules), so it is
-  # the only one that previously had to be found by comparing against its name in
-  # every supported locale.
+  # Neither synthetic category needs one: "Uncategorized" is identified by
+  # `transactions.category_id IS NULL`, and "Other Investments" is a reporting
+  # construct that is never persisted.
   SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS = "investment_contributions"
-  SYSTEM_KEYS = [ SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS ].freeze
 
   validates :name, :color, :lucide_icon, :family, presence: true
   validates :color, format: { with: /\A#[0-9A-Fa-f]{6}\z/ }
   validates :name, uniqueness: { scope: :family_id }
   validates :name, exclusion: { in: [ UNCATEGORIZED_FILTER_VALUE ] }
-  validates :system_key, inclusion: { in: SYSTEM_KEYS }, allow_nil: true
-  validates :system_key, uniqueness: { scope: :family_id }, allow_nil: true
+  # Uniqueness per family is enforced by the partial unique index alone.
+  validates :system_key, inclusion: { in: [ SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS ] }, allow_nil: true
 
   validate :category_level_limit
   validate :parent_in_same_family
@@ -65,12 +64,8 @@ class Category < ApplicationRecord
       .order(:name, :id)
   }
   scope :roots, -> { where(parent_id: nil) }
-  # Categories the application assigns on its own, and everything else. A user
-  # may still rename or recolor a system category; the key is what code matches
-  # on, so renaming it no longer breaks the lookup.
-  # Named system_space rather than `system` on purpose: a `system` scope would
-  # shadow Kernel#system on the class, which Rails warns about.
-  scope :system_space, -> { where.not(system_key: nil) }
+  # A user may rename or recolor a keyed category; code matches on the key, so
+  # renaming it no longer breaks the lookup.
   scope :user_space, -> { where(system_key: nil) }
   scope :with_system_key, ->(key) { where(system_key: key) }
   # Legacy scopes - classification removed; these now return all categories
@@ -387,12 +382,6 @@ class Category < ApplicationRecord
 
   def subcategory?
     parent_id.present? && parent.present?
-  end
-
-  # Assigned by the application rather than only by the user. Distinct from
-  # `synthetic?`, which marks the non-persisted display-only categories.
-  def system?
-    system_key.present?
   end
 
   def name_with_parent

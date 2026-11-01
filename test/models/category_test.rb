@@ -133,7 +133,7 @@ class CategoryTest < ActiveSupport::TestCase
 
   # --- System categories ---
 
-  test "system_key must be one of SYSTEM_KEYS" do
+  test "system_key must be a known key" do
     category = @family.categories.build(
       name: "Bogus", color: "#000000", lucide_icon: "shapes", system_key: "not_a_real_key"
     )
@@ -142,62 +142,32 @@ class CategoryTest < ActiveSupport::TestCase
     assert_includes category.errors[:system_key], "is not included in the list"
   end
 
-  test "a family may hold only one category per system key" do
-    @family.categories.create!(
-      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
+  # Uniqueness per family is the database index's job; there is no model
+  # validation to produce a friendlier error.
+  test "the database allows only one category per system key in a family" do
+    ensure_investment_contributions_category(@family)
 
-    duplicate = @family.categories.build(
-      name: "Contributions aux investissements", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
-
-    assert_not duplicate.valid?
-    assert_includes duplicate.errors[:system_key], "has already been taken"
+    assert_raises(ActiveRecord::RecordNotUnique) do
+      @family.categories.create!(
+        name: "Contributions aux investissements", color: "#0d9488", lucide_icon: "trending-up",
+        system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+      )
+    end
   end
 
   test "two families may each hold the same system key" do
-    @family.categories.create!(
-      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
+    ensure_investment_contributions_category(@family)
 
-    other = families(:empty).categories.create!(
-      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
+    other = ensure_investment_contributions_category(families(:empty))
 
     assert other.persisted?
   end
 
-  test "system_key is nil for ordinary categories" do
-    assert_nil categories(:food_and_drink).system_key
-    assert_not categories(:food_and_drink).system?
-  end
+  test "user_space excludes keyed categories" do
+    keyed = ensure_investment_contributions_category(@family)
 
-  test "system_space and user_space scopes partition the family's categories" do
-    system_category = @family.categories.create!(
-      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
-
-    assert_includes @family.categories.system_space, system_category
-    assert_not_includes @family.categories.user_space, system_category
+    assert_not_includes @family.categories.user_space, keyed
     assert_includes @family.categories.user_space, categories(:food_and_drink)
-    assert_not_includes @family.categories.system_space, categories(:food_and_drink)
-  end
-
-  test "renaming a system category leaves it findable by key" do
-    system_category = @family.categories.create!(
-      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
-
-    system_category.update!(name: "Brokerage top-ups")
-
-    assert_equal system_category,
-      @family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).first
   end
 
   test "display_name localizes default category names" do

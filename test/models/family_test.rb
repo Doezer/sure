@@ -32,8 +32,7 @@ class FamilyTest < ActiveSupport::TestCase
 
   test "investment_contributions_category creates category when missing" do
     family = families(:dylan_family)
-    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
-    family.categories.where(name: Category.investment_contributions_name).destroy_all
+    clear_investment_contributions_category(family)
 
     category = family.investment_contributions_category
 
@@ -46,6 +45,7 @@ class FamilyTest < ActiveSupport::TestCase
 
   test "investment_contributions_category returns existing category" do
     family = families(:dylan_family)
+    # Set up with the test helper, not the method under test, so this isn't circular.
     existing = ensure_investment_contributions_category(family)
 
     assert_no_difference "Category.count" do
@@ -53,26 +53,16 @@ class FamilyTest < ActiveSupport::TestCase
     end
   end
 
-  test "investment_contributions_category creates using the family locale" do
+  test "investment_contributions_category is named by the family locale and found by key under any request locale" do
     family = families(:dylan_family)
     family.update!(locale: "fr")
-    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
+    clear_investment_contributions_category(family)
 
     # The request locale (e.g. from an Accept-Language header) must not decide
     # the stored name; the family's own locale does.
-    category = I18n.with_locale(:en) { family.investment_contributions_category }
-
-    assert_equal "Contributions aux investissements", category.name
-  end
-
-  test "investment_contributions_category is found by key regardless of request locale" do
-    family = families(:dylan_family)
-    family.update!(locale: "fr")
-    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
     created = I18n.with_locale(:en) { family.investment_contributions_category }
+
+    assert_equal "Contributions aux investissements", created.name
 
     assert_no_difference "Category.count" do
       found = I18n.with_locale(:nl) { family.investment_contributions_category }
@@ -101,8 +91,7 @@ class FamilyTest < ActiveSupport::TestCase
   test "investment_contributions_category adopts a same-named user category" do
     family = families(:dylan_family)
     family.update!(locale: "en")
-    family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
-    family.categories.where(name: "Investment Contributions").destroy_all
+    clear_investment_contributions_category(family)
 
     user_category = family.categories.create!(
       name: "Investment Contributions", color: "#111111", lucide_icon: "shapes"
@@ -118,21 +107,7 @@ class FamilyTest < ActiveSupport::TestCase
 
   # Merging the per-locale duplicates older versions could accumulate is
   # BackfillCategorySystemKeys' job now, not this method's -- see
-  # test/migrations/backfill_category_system_keys_migration_test.rb. Once the key
-  # exists a family can only hold one of them, enforced by a partial unique index.
-  test "investment_contributions_category cannot create a second keyed category" do
-    family = families(:dylan_family)
-    ensure_investment_contributions_category(family)
-
-    duplicate = family.categories.build(
-      name: "Contributions aux investissements",
-      color: "#0d9488",
-      lucide_icon: "trending-up",
-      system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
-    )
-
-    assert_not duplicate.valid?
-  end
+  # test/migrations/backfill_category_system_keys_migration_test.rb.
 
   test "moniker helpers return expected singular and plural labels" do
     family = families(:dylan_family)
@@ -707,5 +682,10 @@ class FamilyTest < ActiveSupport::TestCase
   private
     def set_preview_features(user, enabled)
       user.update!(preferences: (user.preferences || {}).merge("preview_features_enabled" => enabled))
+    end
+
+    def clear_investment_contributions_category(family)
+      family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+      family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
     end
 end

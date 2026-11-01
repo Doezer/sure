@@ -10,8 +10,7 @@
 # once this migration has run, so a family left holding two of those rows would
 # have one of them become unreachable. This is the one chance to merge them.
 #
-# Re-runnable: only rows with a NULL system_key are considered, and a family
-# that already has a stamped row is skipped.
+# Re-runnable: a family that already has a stamped row is skipped.
 class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
   SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS = "investment_contributions"
 
@@ -61,7 +60,6 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
         SELECT c.id, c.family_id
         FROM categories c
         WHERE c.name IN (#{quoted_names})
-          AND c.system_key IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM categories existing
             WHERE existing.family_id = c.family_id
@@ -77,7 +75,7 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       rows.to_a.group_by { |row| row["family_id"] }.each_value do |family_rows|
         keeper_id, *duplicate_ids = family_rows.map { |row| row["id"] }
 
-        collapse_duplicates!(keeper_id: keeper_id, duplicate_ids: duplicate_ids) if duplicate_ids.any?
+        duplicate_ids.each { |duplicate_id| merge_into!(keeper_id: keeper_id, duplicate_id: duplicate_id) }
 
         connection.execute(<<~SQL.squish)
           UPDATE categories
@@ -92,27 +90,42 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       stamped
     end
 
-    # Mirrors what Family#investment_contributions_category did on read, so no
-    # family loses data when that runtime de-duplication goes away.
+    # A frozen, deliberately simplified mirror of Category::Merger, kept as raw
+    # SQL for the same reason this migration inlines LEGACY_NAMES: it must not
+    # change behaviour when app code does. Like the Merger it moves children and
+    # transactions onto the keeper and SUMS the two allocations where both rows
+    # exist in the same budget, so merging never silently drops what a user
+    # planned to spend.
     #
-    # Budget rows are deleted where the keeper already holds one for the same
-    # budget and repointed otherwise: budget_categories is unique on
-    # (budget_id, category_id), so a blanket repoint would violate that index
-    # for any budget containing both rows.
-    def collapse_duplicates!(keeper_id:, duplicate_ids:)
-      id_list = duplicate_ids.map { |id| connection.quote(id) }.join(", ")
-      quoted_keeper = connection.quote(keeper_id)
+    # One duplicate at a time. budget_categories is unique on
+    # (budget_id, category_id), so repointing several duplicates in one statement
+    # would collide whenever two of them share a budget the keeper is absent from.
+    def merge_into!(keeper_id:, duplicate_id:)
+      keeper = connection.quote(keeper_id)
+      duplicate = connection.quote(duplicate_id)
 
-      connection.execute("UPDATE categories SET parent_id = #{quoted_keeper} WHERE parent_id IN (#{id_list})")
-      connection.execute("UPDATE transactions SET category_id = #{quoted_keeper} WHERE category_id IN (#{id_list})")
+      connection.execute("UPDATE categories SET parent_id = #{keeper} WHERE parent_id = #{duplicate}")
+      connection.execute("UPDATE transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
+
+      # Budgets that hold both rows: fold the duplicate's allocation into the
+      # keeper's, then drop the duplicate's row.
+      connection.execute(<<~SQL.squish)
+        UPDATE budget_categories AS kept
+        SET budgeted_spending = kept.budgeted_spending + dup.budgeted_spending,
+            updated_at = NOW()
+        FROM budget_categories AS dup
+        WHERE kept.category_id = #{keeper}
+          AND dup.category_id = #{duplicate}
+          AND kept.budget_id = dup.budget_id
+      SQL
       connection.execute(<<~SQL.squish)
         DELETE FROM budget_categories
-        WHERE category_id IN (#{id_list})
-          AND budget_id IN (
-            SELECT budget_id FROM budget_categories WHERE category_id = #{quoted_keeper}
-          )
+        WHERE category_id = #{duplicate}
+          AND budget_id IN (SELECT budget_id FROM budget_categories WHERE category_id = #{keeper})
       SQL
-      connection.execute("UPDATE budget_categories SET category_id = #{quoted_keeper} WHERE category_id IN (#{id_list})")
-      connection.execute("DELETE FROM categories WHERE id IN (#{id_list})")
+
+      # Budgets that only held the duplicate: hand the row over.
+      connection.execute("UPDATE budget_categories SET category_id = #{keeper} WHERE category_id = #{duplicate}")
+      connection.execute("DELETE FROM categories WHERE id = #{duplicate}")
     end
 end

@@ -13,10 +13,10 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
 
   setup do
     @family = families(:dylan_family)
-    # The fixtures and test_helper seed an Investment Contributions category;
+    # test_helper can seed an Investment Contributions category for a family;
     # each test below builds the exact situation it is checking.
     @family.categories.where(name: BackfillCategorySystemKeys::LEGACY_NAMES).destroy_all
-    @family.categories.where.not(system_key: nil).update_all(system_key: nil)
+    @budget = budgets(:one)
   end
 
   test "stamps the key on an existing category" do
@@ -70,33 +70,43 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
     assert_equal keeper.id, child.reload.parent_id
   end
 
-  test "does not leave two budget rows for the same budget and category" do
+  test "sums the allocations when keeper and duplicate share a budget" do
     keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
     duplicate = create_legacy("Contributi investimento", created_at: 1.day.ago)
-    budget = budgets(:one)
-
-    BudgetCategory.where(budget: budget, category: [ keeper, duplicate ]).destroy_all
-    BudgetCategory.create!(budget: budget, category: keeper, budgeted_spending: 100, currency: "USD")
-    BudgetCategory.create!(budget: budget, category: duplicate, budgeted_spending: 50, currency: "USD")
+    allocate(keeper => 100, duplicate => 50)
 
     run_migration
 
-    assert_equal 1, BudgetCategory.where(budget: budget, category: keeper).count,
-      "repointing the duplicate would violate the (budget_id, category_id) index"
+    rows = budget_rows(keeper)
+    assert_equal 1, rows.count, "two rows for one (budget, category) would violate the unique index"
+    assert_equal 150, rows.first.budgeted_spending, "merging must not silently drop what the user planned to spend"
   end
 
-  test "repoints a budget row the keeper does not already have" do
+  test "hands over a budget row the keeper does not have" do
     keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
     duplicate = create_legacy("Wpłaty inwestycyjne", created_at: 1.day.ago)
-    budget = budgets(:one)
-
-    BudgetCategory.where(budget: budget, category: [ keeper, duplicate ]).destroy_all
-    BudgetCategory.create!(budget: budget, category: duplicate, budgeted_spending: 50, currency: "USD")
+    allocate(duplicate => 50)
 
     run_migration
 
-    assert_equal 1, BudgetCategory.where(budget: budget, category: keeper).count,
-      "the duplicate's allocation should survive on the keeper"
+    rows = budget_rows(keeper)
+    assert_equal 1, rows.count
+    assert_equal 50, rows.first.budgeted_spending
+  end
+
+  # Repointing every duplicate in one statement would put two rows for the same
+  # (budget, category) on the keeper and abort the whole deploy.
+  test "merges several duplicates that share a budget the keeper is absent from" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    first = create_legacy("Contributions aux investissements", created_at: 2.days.ago)
+    second = create_legacy("Investeringsbijdragen", created_at: 1.day.ago)
+    allocate(first => 30, second => 20)
+
+    run_migration
+
+    rows = budget_rows(keeper)
+    assert_equal 1, rows.count
+    assert_equal 50, rows.first.budgeted_spending
   end
 
   test "leaves ordinary categories alone" do
@@ -135,6 +145,19 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
         lucide_icon: "trending-up",
         created_at: created_at
       )
+    end
+
+    # Gives the budget exactly these categories, each with the amount given.
+    def allocate(amounts)
+      BudgetCategory.where(budget: @budget, category: amounts.keys).destroy_all
+
+      amounts.each do |category, amount|
+        BudgetCategory.create!(budget: @budget, category: category, budgeted_spending: amount, currency: "USD")
+      end
+    end
+
+    def budget_rows(category)
+      BudgetCategory.where(budget: @budget, category: category)
     end
 
     def run_migration

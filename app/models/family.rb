@@ -665,6 +665,9 @@ class Family < ApplicationRecord
     end
   rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
     # Another process got there first. The key is the identity, so re-read by it.
+    # Both exceptions are possible: losing the race on the key index raises
+    # RecordNotUnique, but a competitor that has already committed the row makes
+    # the name uniqueness validation fail first, which raises RecordInvalid.
     categories.with_system_key(key).first!
   end
 

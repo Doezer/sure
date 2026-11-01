@@ -156,6 +156,8 @@ module ActiveSupport
     #
     # Keyed by system_key, which is how the category is identified after
     # BackfillCategorySystemKeys has run -- the name is only a display default.
+    # Deliberately does not call Family#investment_contributions_category, so
+    # tests of that method can use this for setup without being circular.
     def ensure_investment_contributions_category(family)
       key = Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
       existing = family.categories.with_system_key(key).first
