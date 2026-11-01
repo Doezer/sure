@@ -49,12 +49,11 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
   test "moves a duplicate's transactions onto the keeper" do
     keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
     duplicate = create_legacy("Investeringsbijdragen", created_at: 1.day.ago)
-    transaction = create_transaction(account: @family.accounts.first)
-    transaction.update!(category: duplicate)
+    entry = create_transaction(account: @family.accounts.first, category: duplicate)
 
     run_migration
 
-    assert_equal keeper.id, transaction.reload.category_id,
+    assert_equal keeper.id, entry.entryable.reload.category_id,
       "a transaction must never be left pointing at a merged-away category"
   end
 
@@ -80,6 +79,18 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
     rows = budget_rows(keeper)
     assert_equal 1, rows.count, "two rows for one (budget, category) would violate the unique index"
     assert_equal 150, rows.first.budgeted_spending, "merging must not silently drop what the user planned to spend"
+  end
+
+  test "keeps rollover on when only the duplicate had it" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Contributi investimento", created_at: 1.day.ago)
+    allocate(keeper => 100, duplicate => 50)
+    budget_rows(duplicate).update_all(rollover_enabled: true)
+
+    run_migration
+
+    assert budget_rows(keeper).first.rollover_enabled?,
+      "merging must not silently switch off a rollover the user turned on"
   end
 
   test "hands over a budget row the keeper does not have" do

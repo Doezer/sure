@@ -108,10 +108,14 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       connection.execute("UPDATE transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
 
       # Budgets that hold both rows: fold the duplicate's allocation into the
-      # keeper's, then drop the duplicate's row.
+      # keeper's, then drop the duplicate's row. Rollover is a standing choice
+      # about the envelope, so it survives if EITHER row had it on; the carried
+      # amount itself is derived and is recomputed by Budget::RolloverCalculator
+      # the next time the budget loads.
       connection.execute(<<~SQL.squish)
         UPDATE budget_categories AS kept
         SET budgeted_spending = kept.budgeted_spending + dup.budgeted_spending,
+            rollover_enabled = kept.rollover_enabled OR dup.rollover_enabled,
             updated_at = NOW()
         FROM budget_categories AS dup
         WHERE kept.category_id = #{keeper}
