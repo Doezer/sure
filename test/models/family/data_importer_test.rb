@@ -478,13 +478,13 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal 1, @family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).count
   end
 
-  test "does not collapse two source categories onto one keyed target" do
+  test "keeps the system key on the keyed source category, not a same-named plain one" do
     @family.categories.where(system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
     @family.categories.where(name: [ "Investment Contributions", "Retirement" ]).destroy_all
     keyed = ensure_investment_contributions_category(@family)
 
-    # An unkeyed "Investment Contributions" first, then a different category that
-    # carries the key under another name.
+    # An unkeyed "Investment Contributions" listed BEFORE a different category that
+    # carries the key under another name. The key must follow its own record.
     ndjson = build_ndjson([
       { type: "Category", data: { id: "cat-plain", name: "Investment Contributions", color: "#111111" } },
       { type: "Category", data: {
@@ -494,9 +494,15 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     Family::DataImporter.new(@family, ndjson).import!
 
     retirement = @family.categories.find_by(name: "Retirement")
-    assert_not_nil retirement
-    assert_not_equal keyed.id, retirement.id,
-      "two different source categories must not be merged into the same target"
+    plain = @family.categories.find_by(name: "Investment Contributions")
+
+    assert_equal keyed.id, retirement.id, "the keyed row is the one the keyed record maps to"
+    assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, retirement.system_key
+    assert_not_nil plain
+    assert_not_equal retirement.id, plain.id, "two different source categories must stay two categories"
+    assert_nil plain.system_key
+    assert_equal retirement.id, @family.investment_contributions_category.id,
+      "future transfers must still land on the system category"
   end
 
   test "imports tags" do

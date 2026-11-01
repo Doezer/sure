@@ -412,6 +412,13 @@ class Family::DataImporter
       # lookup cannot hand the same target to a second, different source record.
       claimed_ids = Set.new
 
+      # Records that carry a system key go first, so the key claims its row before
+      # any ordinary name match can take it. Otherwise an unkeyed category that
+      # happens to share the keyed row's current name would win it, and the key
+      # would end up on the wrong category. Stable, so everything else keeps the
+      # export's order.
+      records = records.each_with_index.sort_by { |record, index| [ record.dig("data", "system_key").present? ? 0 : 1, index ] }.map(&:first)
+
       records.each do |record|
         data = record["data"]
         old_id = data["id"]
