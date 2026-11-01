@@ -107,6 +107,18 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       connection.execute("UPDATE categories SET parent_id = #{keeper} WHERE parent_id = #{duplicate}")
       connection.execute("UPDATE transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
 
+      # Everything else that points at a category. recurring_transactions has a
+      # foreign key with ON DELETE SET NULL, so deleting the duplicate would
+      # silently clear its bills' category; the rest reference it with no foreign
+      # key at all (rules keep the id as text), so they would just dangle.
+      # MergeDuplicateTagAndCategoryNames repoints the same set, minus
+      # recurring_transactions.
+      connection.execute("UPDATE recurring_transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
+      connection.execute("UPDATE import_mappings SET mappable_id = #{keeper} WHERE mappable_type = 'Category' AND mappable_id = #{duplicate}")
+      connection.execute("UPDATE import_source_mappings SET target_id = #{keeper} WHERE target_type = 'Category' AND target_id = #{duplicate}")
+      connection.execute("UPDATE rule_actions SET value = #{keeper} WHERE action_type = 'set_transaction_category' AND value = #{duplicate}")
+      connection.execute("UPDATE rule_conditions SET value = #{keeper} WHERE condition_type = 'transaction_category' AND value = #{duplicate}")
+
       # Budgets that hold both rows: fold the duplicate's allocation into the
       # keeper's, then drop the duplicate's row. Rollover is a standing choice
       # about the envelope, so it survives if EITHER row had it on; the carried

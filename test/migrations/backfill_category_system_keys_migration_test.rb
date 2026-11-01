@@ -69,6 +69,37 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
     assert_equal keeper.id, child.reload.parent_id
   end
 
+  # recurring_transactions.category_id is ON DELETE SET NULL, so deleting the
+  # duplicate would silently clear the bill's category.
+  test "moves a duplicate's recurring bills onto the keeper" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Contributions aux investissements", created_at: 1.day.ago)
+    bill = recurring_transactions(:netflix_subscription)
+    bill.update_columns(category_id: duplicate.id)
+
+    run_migration
+
+    assert_equal keeper.id, bill.reload.category_id,
+      "deleting the duplicate must not clear the bill's category"
+  end
+
+  # Rules hold the category id as text with no foreign key, so a deleted
+  # duplicate would leave them pointing at nothing and they would stop matching.
+  test "repoints rules that reference a duplicate" do
+    keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
+    duplicate = create_legacy("Investeringsbijdragen", created_at: 1.day.ago)
+    rule = rules(:one)
+    action = rule.actions.build(action_type: "set_transaction_category", value: duplicate.id)
+    action.save!(validate: false)
+    condition = rule.conditions.build(condition_type: "transaction_category", operator: "=", value: duplicate.id)
+    condition.save!(validate: false)
+
+    run_migration
+
+    assert_equal keeper.id, action.reload.value
+    assert_equal keeper.id, condition.reload.value
+  end
+
   test "sums the allocations when keeper and duplicate share a budget" do
     keeper = create_legacy("Investment Contributions", created_at: 3.days.ago)
     duplicate = create_legacy("Contributi investimento", created_at: 1.day.ago)
