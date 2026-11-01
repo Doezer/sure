@@ -408,6 +408,16 @@ class Family::DataImporter
     def import_categories(records)
       # First pass: create all categories without parent relationships
       parent_mappings = {}
+      # Categories already matched to a source record in this import, so a keyed
+      # lookup cannot hand the same target to a second, different source record.
+      claimed_ids = Set.new
+
+      # Records that carry a system key go first, so the key claims its row before
+      # any ordinary name match can take it. Otherwise an unkeyed category that
+      # happens to share the keyed row's current name would win it, and the key
+      # would end up on the wrong category. Stable, so everything else keeps the
+      # export's order.
+      records = records.each_with_index.sort_by { |record, index| [ record.dig("data", "system_key").present? ? 0 : 1, index ] }.map(&:first)
 
       records.each do |record|
         data = record["data"]
@@ -424,7 +434,26 @@ class Family::DataImporter
         # otherwise try to create a second "Groceries" and hit the unique index.
         # Preflight already treats this as a reusable match, not a collision.
         category = mapped_record(:categories, old_id, @family.categories, record_type: "Category")
+        # On a name collision the name wins, as it always has. If the match is an
+        # ordinary category but this record carries a system key that another row
+        # already holds, the key is skipped rather than moved: forcing it would
+        # rename the keyed row onto an occupied name and fail the whole restore.
         category ||= @family.categories.find_by(name: data["name"])
+
+        # A system category is identified by its key, not its name. The family
+        # being restored into may already hold it under another spelling (its
+        # defaults were seeded in a different locale), and creating a second one
+        # would leave the app with two and only one reachable.
+        #
+        # Unless an earlier record in this export already took that row: two
+        # distinct source categories (say an unkeyed "Investment Contributions"
+        # and a keyed one the user renamed) must not collapse into one target.
+        system_key = data["system_key"].presence
+        if category.nil? && system_key
+          keyed = @family.categories.with_system_key(system_key).first
+          category = keyed unless keyed.nil? || claimed_ids.include?(keyed.id)
+        end
+
         created = category.blank?
         category ||= @family.categories.build
 
@@ -434,7 +463,16 @@ class Family::DataImporter
           classification_unused: data["classification_unused"] || data["classification"] || "expense",
           lucide_icon: data["lucide_icon"] || "shapes"
         )
+
+        # Carry the key across, unless this family already keys another category
+        # with it (the partial unique index allows one per family).
+        if system_key == Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS && category.system_key.nil? &&
+            !@family.categories.with_system_key(system_key).where.not(id: category.id).exists?
+          category.system_key = system_key
+        end
+
         category.save!
+        claimed_ids << category.id
         map_source!(:categories, old_id, category)
         increment_summary("Category", created ? :created : :updated)
       end

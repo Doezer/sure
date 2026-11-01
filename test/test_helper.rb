@@ -153,13 +153,23 @@ module ActiveSupport
 
     # Ensures the Investment Contributions category exists for a family
     # Used in transfer tests where this bootstrapped category is required
-    # Uses family locale to ensure consistent naming
+    #
+    # Keyed by system_key, which is how the category is identified after
+    # BackfillCategorySystemKeys has run -- the name is only a display default.
+    # Deliberately does not call Family#investment_contributions_category, so
+    # tests of that method can use this for setup without being circular.
     def ensure_investment_contributions_category(family)
+      key = Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+      existing = family.categories.with_system_key(key).first
+      return existing if existing
+
       I18n.with_locale(family.locale) do
-        family.categories.find_or_create_by!(name: Category.investment_contributions_name) do |c|
-          c.color = "#0d9488"
-          c.lucide_icon = "trending-up"
-        end
+        family.categories.create!(
+          system_key: key,
+          name: Category.investment_contributions_name,
+          color: "#0d9488",
+          lucide_icon: "trending-up"
+        )
       end
     end
   end

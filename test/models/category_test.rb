@@ -131,14 +131,85 @@ class CategoryTest < ActiveSupport::TestCase
     assert_equal "Validation failed: Parent can't have more than 2 levels of subcategories", error.message
   end
 
-  test "all_investment_contributions_names returns all locale variants" do
-    names = Category.all_investment_contributions_names
+  # --- System categories ---
 
-    assert_includes names, "Investment Contributions"  # English
-    assert_includes names, "Contributions aux investissements"  # French
-    assert_includes names, "Investeringsbijdragen"  # Dutch
-    assert names.all? { |name| name.is_a?(String) }
-    assert_equal names, names.uniq  # No duplicates
+  test "system_key must be a known key" do
+    category = @family.categories.build(
+      name: "Bogus", color: "#000000", lucide_icon: "shapes", system_key: "not_a_real_key"
+    )
+
+    assert_not category.valid?
+    assert_includes category.errors[:system_key], "is not included in the list"
+  end
+
+  # Uniqueness per family is the database index's job; there is no model
+  # validation to produce a friendlier error.
+  test "the database allows only one category per system key in a family" do
+    ensure_investment_contributions_category(@family)
+
+    assert_raises(ActiveRecord::RecordNotUnique) do
+      @family.categories.create!(
+        name: "Contributions aux investissements", color: "#0d9488", lucide_icon: "trending-up",
+        system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
+      )
+    end
+  end
+
+  test "two families may each hold the same system key" do
+    ensure_investment_contributions_category(@family)
+
+    other = ensure_investment_contributions_category(families(:empty))
+
+    assert other.persisted?
+  end
+
+  test "bootstrap! creates Investment Contributions with its key" do
+    family = families(:empty)
+
+    family.categories.bootstrap!
+
+    assert_equal 1, family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).count
+  end
+
+  # Without the key, a family that changed locale after bootstrapping would miss
+  # the row and get a second Investment Contributions on its first transfer.
+  test "bootstrap! lets a locale change still find Investment Contributions" do
+    family = families(:empty)
+    family.update!(locale: "en")
+    I18n.with_locale(:en) { family.categories.bootstrap! }
+    family.update!(locale: "fr")
+
+    assert_no_difference -> { family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).count } do
+      family.investment_contributions_category
+    end
+  end
+
+  test "bootstrap! does not add a second Investment Contributions when one is keyed under another name" do
+    family = families(:empty)
+    ensure_investment_contributions_category(family).update!(name: "Brokerage top-ups")
+
+    family.categories.bootstrap!
+
+    assert_equal 1, family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).count
+    assert_nil family.categories.find_by(name: Category.investment_contributions_name)
+  end
+
+  test "bootstrap! stamps the key on an existing unkeyed Investment Contributions" do
+    family = families(:empty)
+    existing = family.categories.create!(
+      name: Category.investment_contributions_name, color: "#0d9488", lucide_icon: "trending-up"
+    )
+
+    family.categories.bootstrap!
+
+    assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, existing.reload.system_key
+  end
+
+  test "user_space excludes keyed categories" do
+    keyed = ensure_investment_contributions_category(@family)
+
+    assert_not_includes @family.categories.user_space, keyed
+    assert_includes @family.categories.user_space, categories(:food_and_drink)
   end
 
   test "display_name localizes default category names" do

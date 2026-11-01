@@ -21,10 +21,28 @@ class Category < ApplicationRecord
   # category can never collide with it, regardless of name or locale.
   UNCATEGORIZED_FILTER_VALUE = "__uncategorized__"
 
+  # A stable identity for a category the application creates and assigns on its
+  # own, so code can find it again without comparing against a localized name.
+  #
+  # This is the first key, not a complete list. "Fees" (Transfer::Creator and
+  # TransfersController) is created, assigned and found by request-locale name
+  # in the same way and should get one too, and the provider category matchers
+  # (Monobank, Up, Plaid) locate the bootstrapped defaults by translated name.
+  # A general `default_key` on every bootstrapped category would cover all of
+  # those, and would let `localized_default_name_for` go; this column is the
+  # narrower step that removes the worst case first.
+  #
+  # Neither synthetic category needs one: "Uncategorized" is identified by
+  # `transactions.category_id IS NULL`, and "Other Investments" is a reporting
+  # construct that is never persisted.
+  SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS = "investment_contributions"
+
   validates :name, :color, :lucide_icon, :family, presence: true
   validates :color, format: { with: /\A#[0-9A-Fa-f]{6}\z/ }
   validates :name, uniqueness: { scope: :family_id }
   validates :name, exclusion: { in: [ UNCATEGORIZED_FILTER_VALUE ] }
+  # Uniqueness per family is enforced by the partial unique index alone.
+  validates :system_key, inclusion: { in: [ SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS ] }, allow_nil: true
 
   validate :category_level_limit
   validate :parent_in_same_family
@@ -46,6 +64,10 @@ class Category < ApplicationRecord
       .order(:name, :id)
   }
   scope :roots, -> { where(parent_id: nil) }
+  # A user may rename or recolor a keyed category; code matches on the key, so
+  # renaming it no longer breaks the lookup.
+  scope :user_space, -> { where(system_key: nil) }
+  scope :with_system_key, ->(key) { where(system_key: key) }
   # Legacy scopes - classification removed; these now return all categories
   scope :incomes, -> { all }
   scope :expenses, -> { all }
@@ -233,10 +255,20 @@ class Category < ApplicationRecord
 
     def bootstrap!
       default_categories.each do |name, color, icon|
-        find_or_create_by!(name: name) do |category|
-          category.color = color
-          category.lucide_icon = icon
+        # Investment Contributions is the one default code looks up again later,
+        # so it is created with its key. Without it a family that changed locale
+        # before its first investment transfer would miss this row and get a
+        # second one. If the family already has the keyed row, under whatever
+        # name, bootstrapping must not add another.
+        key = SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS if name == investment_contributions_name
+        next if key && with_system_key(key).exists?
+
+        category = find_or_create_by!(name: name) do |new_category|
+          new_category.color = color
+          new_category.lucide_icon = icon
         end
+
+        category.update!(system_key: key) if key && category.system_key.nil?
       end
     end
 
@@ -277,14 +309,6 @@ class Category < ApplicationRecord
     # Helper to get the localized name for investment contributions
     def investment_contributions_name
       I18n.t(INVESTMENT_CONTRIBUTIONS_NAME_KEY)
-    end
-
-    # Returns all possible investment contributions names across all supported locales
-    # Used to detect investment contributions category regardless of locale
-    def all_investment_contributions_names
-      LanguagesHelper::SUPPORTED_LOCALES.map do |locale|
-        I18n.t(INVESTMENT_CONTRIBUTIONS_NAME_KEY, locale: locale)
-      end.uniq
     end
 
     def localized_default_name_for(name)

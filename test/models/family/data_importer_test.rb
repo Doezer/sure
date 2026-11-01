@@ -442,6 +442,69 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal parent.id, child.parent_id
   end
 
+  test "imports the system key of a category" do
+    @family.categories.where(system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    @family.categories.where(name: "Investment Contributions").destroy_all
+
+    ndjson = build_ndjson([
+      { type: "Category", data: {
+          id: "cat-ic", name: "Investment Contributions", color: "#0d9488",
+          lucide_icon: "trending-up", system_key: "investment_contributions" } }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    assert_equal "investment_contributions",
+      @family.categories.find_by(name: "Investment Contributions").system_key,
+      "dropping the key would make the app create a second Investment Contributions on its next transfer"
+  end
+
+  test "reuses the family's existing keyed category instead of creating a second" do
+    @family.categories.where(system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    @family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
+    existing = ensure_investment_contributions_category(@family)
+    existing.update!(name: "Contributions aux investissements")
+
+    ndjson = build_ndjson([
+      { type: "Category", data: {
+          id: "cat-ic", name: "Investment Contributions", color: "#0d9488",
+          lucide_icon: "trending-up", system_key: "investment_contributions" } }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    assert_equal [ existing.id ],
+      @family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).pluck(:id)
+    assert_equal 1, @family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).count
+  end
+
+  test "keeps the system key on the keyed source category, not a same-named plain one" do
+    @family.categories.where(system_key: Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).destroy_all
+    @family.categories.where(name: [ "Investment Contributions", "Retirement" ]).destroy_all
+    keyed = ensure_investment_contributions_category(@family)
+
+    # An unkeyed "Investment Contributions" listed BEFORE a different category that
+    # carries the key under another name. The key must follow its own record.
+    ndjson = build_ndjson([
+      { type: "Category", data: { id: "cat-plain", name: "Investment Contributions", color: "#111111" } },
+      { type: "Category", data: {
+          id: "cat-keyed", name: "Retirement", color: "#222222", system_key: "investment_contributions" } }
+    ])
+
+    Family::DataImporter.new(@family, ndjson).import!
+
+    retirement = @family.categories.find_by(name: "Retirement")
+    plain = @family.categories.find_by(name: "Investment Contributions")
+
+    assert_equal keyed.id, retirement.id, "the keyed row is the one the keyed record maps to"
+    assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, retirement.system_key
+    assert_not_nil plain
+    assert_not_equal retirement.id, plain.id, "two different source categories must stay two categories"
+    assert_nil plain.system_key
+    assert_equal retirement.id, @family.investment_contributions_category.id,
+      "future transfers must still land on the system category"
+  end
+
   test "imports tags" do
     ndjson = build_ndjson([
       {

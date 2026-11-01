@@ -155,7 +155,7 @@ class Transfer < ApplicationRecord
 
       if enabled && category.nil?
         outflow_attrs[:category] = to_account.family.investment_contributions_category
-      elsif !enabled && category && Category.all_investment_contributions_names.include?(category.name)
+      elsif !enabled && category&.system_key == Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS
         outflow_attrs[:category] = nil
       end
 
