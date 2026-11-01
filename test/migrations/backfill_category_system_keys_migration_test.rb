@@ -69,6 +69,37 @@ class BackfillCategorySystemKeysMigrationTest < ActiveSupport::TestCase
     assert_equal keeper.id, child.reload.parent_id
   end
 
+  test "does not make the keeper its own parent when it sat under the duplicate" do
+    duplicate = create_legacy("Contributions aux investissements", created_at: 1.day.ago)
+    keeper = @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      parent: duplicate, created_at: 3.days.ago
+    )
+
+    run_migration
+
+    assert_nil keeper.reload.parent_id, "a category must never be its own parent"
+    assert_equal "investment_contributions", keeper.system_key
+  end
+
+  test "keeps the hierarchy at two levels when the keeper is itself a subcategory" do
+    parent = @family.categories.create!(name: "Savings", color: "#000000", lucide_icon: "piggy-bank")
+    keeper = @family.categories.create!(
+      name: "Investment Contributions", color: "#0d9488", lucide_icon: "trending-up",
+      parent: parent, created_at: 3.days.ago
+    )
+    duplicate = create_legacy("Investeringsbijdragen", created_at: 1.day.ago)
+    child = @family.categories.create!(
+      name: "Brokerage top-ups", color: "#000000", lucide_icon: "shapes", parent: duplicate
+    )
+
+    run_migration
+
+    assert_nil child.reload.parent_id,
+      "moving the child under a subcategory would create a third level"
+    assert_equal parent.id, keeper.reload.parent_id
+  end
+
   # recurring_transactions.category_id is ON DELETE SET NULL, so deleting the
   # duplicate would silently clear the bill's category.
   test "moves a duplicate's recurring bills onto the keeper" do

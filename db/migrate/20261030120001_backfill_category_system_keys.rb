@@ -104,7 +104,21 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       keeper = connection.quote(keeper_id)
       duplicate = connection.quote(duplicate_id)
 
-      connection.execute("UPDATE categories SET parent_id = #{keeper} WHERE parent_id = #{duplicate}")
+      # Hierarchy first, as MergeDuplicateTagAndCategoryNames does. The keeper may
+      # itself sit under the duplicate (one locale variant dragged under another);
+      # repointing the duplicate's children blindly would make it its own parent.
+      # And categories allow only two levels, so the duplicate's children move
+      # under the keeper only if the keeper is a root; otherwise they become roots.
+      connection.execute("UPDATE categories SET parent_id = NULL WHERE id = #{keeper} AND parent_id = #{duplicate}")
+      connection.execute(<<~SQL.squish)
+        UPDATE categories
+        SET parent_id = CASE
+              WHEN (SELECT parent_id FROM categories WHERE id = #{keeper}) IS NULL THEN #{keeper}::uuid
+              ELSE NULL
+            END
+        WHERE parent_id = #{duplicate} AND id <> #{keeper}
+      SQL
+
       connection.execute("UPDATE transactions SET category_id = #{keeper} WHERE category_id = #{duplicate}")
 
       # Everything else that points at a category. recurring_transactions has a
