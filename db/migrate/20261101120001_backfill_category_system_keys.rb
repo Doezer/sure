@@ -117,6 +117,13 @@ class BackfillCategorySystemKeys < ActiveRecord::Migration[8.1]
       # reads high until the parent is next edited. It takes a duplicate locale
       # variant that is nested under an unrelated category AND budgeted, and
       # Category::Merger has the same blind spot.
+      #
+      # Likewise duplicates are merged pairwise into the keeper, so three variants
+      # that are related to each other AND budgeted in one month can lose an
+      # allocation (an independent variant's amount is absorbed, then a later
+      # parent/child step takes the larger of two figures). Doing that exactly
+      # means computing the whole group's allocation from the original hierarchy
+      # before any row is rewritten.
       parent_and_child = connection.select_value(<<~SQL.squish).to_i.positive?
         SELECT COUNT(*) FROM categories
         WHERE (id = #{keeper} AND parent_id = #{duplicate})

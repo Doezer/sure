@@ -434,6 +434,10 @@ class Family::DataImporter
         # otherwise try to create a second "Groceries" and hit the unique index.
         # Preflight already treats this as a reusable match, not a collision.
         category = mapped_record(:categories, old_id, @family.categories, record_type: "Category")
+        # On a name collision the name wins, as it always has. If the match is an
+        # ordinary category but this record carries a system key that another row
+        # already holds, the key is skipped rather than moved: forcing it would
+        # rename the keyed row onto an occupied name and fail the whole restore.
         category ||= @family.categories.find_by(name: data["name"])
 
         # A system category is identified by its key, not its name. The family
