@@ -163,6 +163,48 @@ class CategoryTest < ActiveSupport::TestCase
     assert other.persisted?
   end
 
+  test "bootstrap! creates Investment Contributions with its key" do
+    family = families(:empty)
+
+    family.categories.bootstrap!
+
+    assert_equal 1, family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).count
+  end
+
+  # Without the key, a family that changed locale after bootstrapping would miss
+  # the row and get a second Investment Contributions on its first transfer.
+  test "bootstrap! lets a locale change still find Investment Contributions" do
+    family = families(:empty)
+    family.update!(locale: "en")
+    I18n.with_locale(:en) { family.categories.bootstrap! }
+    family.update!(locale: "fr")
+
+    assert_no_difference -> { family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).count } do
+      family.investment_contributions_category
+    end
+  end
+
+  test "bootstrap! does not add a second Investment Contributions when one is keyed under another name" do
+    family = families(:empty)
+    ensure_investment_contributions_category(family).update!(name: "Brokerage top-ups")
+
+    family.categories.bootstrap!
+
+    assert_equal 1, family.categories.with_system_key(Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS).count
+    assert_nil family.categories.find_by(name: Category.investment_contributions_name)
+  end
+
+  test "bootstrap! stamps the key on an existing unkeyed Investment Contributions" do
+    family = families(:empty)
+    existing = family.categories.create!(
+      name: Category.investment_contributions_name, color: "#0d9488", lucide_icon: "trending-up"
+    )
+
+    family.categories.bootstrap!
+
+    assert_equal Category::SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS, existing.reload.system_key
+  end
+
   test "user_space excludes keyed categories" do
     keyed = ensure_investment_contributions_category(@family)
 

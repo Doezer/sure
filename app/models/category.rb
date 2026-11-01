@@ -255,10 +255,20 @@ class Category < ApplicationRecord
 
     def bootstrap!
       default_categories.each do |name, color, icon|
-        find_or_create_by!(name: name) do |category|
-          category.color = color
-          category.lucide_icon = icon
+        # Investment Contributions is the one default code looks up again later,
+        # so it is created with its key. Without it a family that changed locale
+        # before its first investment transfer would miss this row and get a
+        # second one. If the family already has the keyed row, under whatever
+        # name, bootstrapping must not add another.
+        key = SYSTEM_KEY_INVESTMENT_CONTRIBUTIONS if name == investment_contributions_name
+        next if key && with_system_key(key).exists?
+
+        category = find_or_create_by!(name: name) do |new_category|
+          new_category.color = color
+          new_category.lucide_icon = icon
         end
+
+        category.update!(system_key: key) if key && category.system_key.nil?
       end
     end
 
