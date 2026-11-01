@@ -1,0 +1,64 @@
+# Throwaway: regenerates db/schema.rb with the repo's own tooling when the
+# development environment cannot run Ruby 3.4.9. Lives on tmp-schema-gen only.
+name: Generate schema
+
+on:
+  push:
+    branches: [tmp-schema-gen]
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      PLAID_CLIENT_ID: foo
+      PLAID_SECRET: bar
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432 # pipelock:ignore
+      REDIS_URL: redis://localhost:6379
+      RAILS_ENV: test
+
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y curl libvips postgresql-client libpq-dev
+
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@97ecb7b512899eb71ab1bf2310a624c6f1589ac6 # v1.308.0
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Load the committed schema, then apply the pending migrations
+        run: |
+          bin/rails db:create
+          bin/rails db:schema:load
+          bin/rails db:migrate
+
+      - name: Commit the regenerated schema
+        run: |
+          git diff --stat db/schema.rb
+          if git diff --quiet db/schema.rb; then
+            echo "schema.rb unchanged"
+            exit 0
+          fi
+          git config user.name "schema-gen"
+          git config user.email "schema-gen@users.noreply.github.com"
+          git add db/schema.rb
+          git commit -m "Regenerate db/schema.rb"
+          git push
